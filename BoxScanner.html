@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Toy Code Matcher</title>
+    <script async src="https://docs.opencv.org/4.x/opencv.js" type="text/javascript" onload="onOpenCvReady();"></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background: #121212; color: white; margin: 0; padding: 15px; }
+        .container { max-width: 500px; margin: auto; }
+        .upload-section, .camera-section { background: #1e1e1e; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        #videoContainer { position: relative; width: 100%; max-width: 400px; margin: auto; border: 2px solid #333; }
+        video { width: 100%; display: block; }
+        /* Kotak Panduan (Reticle Box) di tengah kamera */
+        .reticle { position: absolute; top: 35%; left: 10%; width: 80%; height: 30%; border: 2px dashed rgba(255,255,255,0.6); box-sizing: border-box; pointer-events: none; }
+        button { background: #007bff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px; width: 100%; }
+        button:disabled { background: #555; }
+        #scanBtn { background: #28a745; font-size: 18px; padding: 15px; }
+        #notification { display: none; margin-top: 15px; padding: 15px; font-size: 20px; font-weight: bold; border-radius: 5px; }
+        .match { background: #28a745; color: white; animation: fade 3s forwards; }
+        .not-match { background: #dc3545; color: white; animation: fade 3s forwards; }
+        #status { color: #ffc107; font-size: 14px; }
+        img, canvas { max-width: 100%; height: auto; margin-top: 10px; display: none; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Toy Code Matcher</h2>
+    <p id="status">Memuatkan OpenCV.js... Sila tunggu.</p>
+
+    <div class="upload-section">
+        <h3>1. Gambar Sasaran (Target)</h3>
+        <input type="file" id="fileInput" accept="image/*" disabled>
+        <img id="targetImage" alt="Target Preview">
+    </div>
+
+    <div class="camera-section">
+        <h3>2. Imbas Kotak Baru</h3>
+        <div id="videoContainer">
+            <video id="video" autoplay playsinline></video>
+            <div class="reticle"></div>
+        </div>
+        <button id="scanBtn" disabled>SCAN</button>
+    </div>
+
+    <div id="notification"></div>
+
+    <canvas id="canvasHidden"></canvas>
+</div>
+
+<script>
+    let cvReady = false;
+    let targetMat = null;
+    let orb = null;
+    let matcher = null;
+    let targetKeypoints, targetDescriptors;
+
+    const statusText = document.getElementById('status');
+    const fileInput = document.getElementById('fileInput');
+    const video = document.getElementById('video');
+    const scanBtn = document.getElementById('scanBtn');
+    const notification = document.getElementById('notification');
+    const targetImg = document.getElementById('targetImage');
+    const canvasHidden = document.getElementById('canvasHidden');
+
+    // Cek jika OpenCV.js dah sedia
+    function onOpenCvReady() {
+        cv['onRuntimeInitialized'] = () => {
+            cvReady = true;
+            statusText.innerText = "OpenCV.js Sedia! Sila upload gambar target.";
+            fileInput.disabled = false;
+            initCamera();
+        };
+    }
+
+    // Hidupkan Kamera Belakang Telefon
+    async function initCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+                audio: false
+            });
+            video.srcObject = stream;
+        } catch (err) {
+            statusText.innerText = "Gagal akses kamera: " + err.message;
+        }
+    }
+
+    // Proses gambar target bila user upload
+    fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            targetImg.src = event.target.result;
+            targetImg.style.display = 'block';
+            
+            targetImg.onload = function() {
+                // Sediakan OpenCV Variables
+                if (targetMat) targetMat.delete();
+                
+                // Baca imej ke dalam format OpenCV Matrix
+                targetMat = cv.imread(targetImg);
+                cv.cvtColor(targetMat, targetMat, cv.COLOR_RGBA2GRAY); // Tukar ke Grayscale
+
+                // Inisialisasi ORB Detector
+                orb = new cv.ORB();
+                targetKeypoints = new cv.KeyPointVector();
+                targetDescriptors = new cv.Mat();
+                
+                // Cari titik unik (features) gambar target
+                orb.detectAndCompute(targetMat, new cv.Mat(), targetKeypoints, targetDescriptors);
+                
+                matcher = new cv.BFMatcher(cv.NORM_HAMMING, true);
+                
+                statusText.innerText = "Gambar target berjaya diproses! Sedia untuk SCAN.";
+                scanBtn.disabled = false;
+            }
+        };
+        reader.readAsDataURL(file);
+    });
+
+    // Event Trigger bila butang SCAN ditekan
+    scanBtn.addEventListener('click', () => {
+        if (!cvReady || !targetDescriptors) return;
+
+        // Ambil snapshot dari video stream sekarang
+        const ctx = canvasHidden.getContext('2d');
+        canvasHidden.width = video.videoWidth;
+        canvasHidden.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvasHidden.width, canvasHidden.height);
+
+        // Tukar snapshot kepada OpenCV Matrix
+        let srcMat = cv.imread(canvasHidden);
+        let grayMat = new cv.Mat();
+        cv.cvtColor(srcMat, grayMat, cv.COLOR_RGBA2GRAY);
+
+        // Cari titik unik pada snapshot kamera
+        let srcKeypoints = new cv.KeyPointVector();
+        let srcDescriptors = new cv.Mat();
+        orb.detectAndCompute(grayMat, new cv.Mat(), srcKeypoints, srcDescriptors);
+
+        // Buat padanan (Matching)
+        let matches = new cv.DMatchVector();
+        let matchFound = false;
+
+        if (!srcDescriptors.empty() && srcDescriptors.rows > 0) {
+            matcher.match(targetDescriptors, srcDescriptors, matches);
+            
+            // Tapis padanan yang berkualiti (Good Matches)
+            let goodMatchesCount = 0;
+            for (let i = 0; i < matches.size(); ++i) {
+                let match = matches.get(i);
+                // Jarak (distance) yang kecil bermakna padanan yang sangat tepat
+                if (match.distance < 40) { 
+                    goodMatchesCount++;
+                }
+            }
+
+            // Threshold: Jika ada lebih daripada 15 titik padanan berkualiti tinggi, dikira MATCH
+            if (goodMatchesCount > 15) {
+                matchFound = true;
+            }
+        }
+
+        // Papar Notifikasi Visual
+        showNotification(matchFound);
+
+        // Bersihkan memori OpenCV untuk elak memory leak
+        srcMat.delete();
+        grayMat.delete();
+        srcKeypoints.delete();
+        srcDescriptors.delete();
+        matches.delete();
+    });
+
+    function showNotification(isMatch) {
+        notification.style.display = 'block';
+        if (isMatch) {
+            notification.className = 'match';
+            notification.innerText = 'MATCH FOUND';
+        } else {
+            notification.className = 'not-match';
+            notification.innerText = 'NOT MATCH';
+        }
+
+        // Hilangkan notifikasi selepas 3 saat
+        setTimeout(() => {
+            notification.style.display = 'none';
+        }, 3000);
+    }
+</script>
+
+</body>
+</html>
